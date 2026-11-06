@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AXOLUS – Relevé GPS</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; background: #f2f4f7; color: #1b1f24; }
+  header { background: #0b3d91; color: #fff; padding: 14px 16px; font-size: 18px; font-weight: bold; }
+  main { padding: 12px; max-width: 520px; margin: 0 auto; }
+  .info { font-size: 14px; background: #fff3cd; border-radius: 8px; padding: 10px; margin-bottom: 12px; }
+  .carte { background: #fff; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .titre { font-weight: bold; margin-bottom: 4px; }
+  .coord { font-size: 20px; font-family: monospace; margin: 6px 0; word-break: break-all; }
+  .meta { font-size: 13px; color: #555; margin-bottom: 8px; }
+  .ok { color: #1a7f37; } .moyen { color: #b26a00; } .mauvais { color: #c62828; }
+  button { font-size: 16px; padding: 12px 14px; border: 0; border-radius: 8px; margin-right: 6px; margin-top: 4px; }
+  .cap { background: #0b3d91; color: #fff; }
+  .cop { background: #e3e8f0; color: #1b1f24; }
+  .grand { width: 100%; background: #1a7f37; color: #fff; margin: 4px 0 10px; }
+  .danger { background: #fff; color: #c62828; border: 1px solid #c62828; width: 100%; margin-top: 8px; }
+  #msg { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: #222; color: #fff;
+         padding: 10px 16px; border-radius: 20px; display: none; font-size: 14px; }
+</style>
+</head>
+<body>
+<header>AXOLUS – Relevé GPS</header>
+<main>
+  <div class="info">
+    Place-toi <b>exactement à l'endroit à relever</b> (au pied du FAT, du poteau, devant la maison),
+    attends la fin de la mesure, puis touche « Capturer ». Fais ensuite « Copier » et colle dans le formulaire.
+  </div>
+  <div id="liste"></div>
+  <button class="cop grand" onclick="copierPoteaux()">Copier tous les poteaux (un par ligne)</button>
+  <button class="danger" onclick="toutEffacer()">Effacer tous les points (nouveau client)</button>
+</main>
+<div id="msg"></div>
+
+<script>
+const POINTS = [
+  {id: "fat",    label: "GPS du FAT"},
+  {id: "client", label: "GPS du client"},
+  {id: "p1",     label: "Poteau 1"},
+  {id: "p2",     label: "Poteau 2"},
+  {id: "p3",     label: "Poteau 3"},
+  {id: "p4",     label: "Poteau 4"},
+  {id: "p5",     label: "Poteau 5"}
+];
+const CLE = "axolus_gps_v1";
+const DUREE_MESURE_MS = 12000;   // durée maximale de la mesure
+const PRECISION_CIBLE = 8;       // on s'arrête si la précision atteint 8 m
+
+function charger() {
+  try { return JSON.parse(localStorage.getItem(CLE)) || {}; } catch (e) { return {}; }
+}
+function sauver(d) {
+  try { localStorage.setItem(CLE, JSON.stringify(d)); } catch (e) {}
+}
+function message(t) {
+  const m = document.getElementById("msg");
+  m.textContent = t; m.style.display = "block";
+  setTimeout(() => m.style.display = "none", 2200);
+}
+function classePrecision(p) { return p <= 15 ? "ok" : (p <= 30 ? "moyen" : "mauvais"); }
+
+function afficher() {
+  const d = charger();
+  document.getElementById("liste").innerHTML = POINTS.map(p => {
+    const v = d[p.id];
+    return `<div class="carte">
+      <div class="titre">${p.label}</div>
+      <div class="coord" id="c_${p.id}">${v ? v.coord : "—"}</div>
+      <div class="meta" id="m_${p.id}">${v
+        ? `Précision : <b class="${classePrecision(v.acc)}">± ${v.acc} m</b> • ${v.heure}`
+        : "Pas encore relevé"}</div>
+      <button class="cap" onclick="capturer('${p.id}')">📍 Capturer</button>
+      <button class="cop" onclick="copierPoint('${p.id}')">Copier</button>
+    </div>`;
+  }).join("");
+}
+
+function capturer(id) {
+  if (!navigator.geolocation) { message("GPS non disponible sur cet appareil"); return; }
+  const meta = document.getElementById("m_" + id);
+  meta.textContent = "Mesure en cours… ne bouge pas";
+  let meilleur = null;
+  let fini = false;
+
+  const terminer = () => {
+    if (fini) return; fini = true;
+    navigator.geolocation.clearWatch(suivi);
+    clearTimeout(minuteur);
+    if (!meilleur) { meta.textContent = "Échec. Active la localisation et réessaie."; return; }
+    const d = charger();
+    d[id] = {
+      coord: meilleur.coords.latitude.toFixed(6) + ", " + meilleur.coords.longitude.toFixed(6),
+      acc: Math.round(meilleur.coords.accuracy),
+      heure: new Date().toLocaleTimeString("fr-FR", {hour: "2-digit", minute: "2-digit"})
+    };
+    sauver(d); afficher();
+    if (d[id].acc > 30) message("Précision faible : réessaie à découvert");
+  };
+
+  const suivi = navigator.geolocation.watchPosition(
+    pos => {
+      if (!meilleur || pos.coords.accuracy < meilleur.coords.accuracy) meilleur = pos;
+      meta.textContent = "Mesure en cours… précision ± " + Math.round(meilleur.coords.accuracy) + " m";
+      if (meilleur.coords.accuracy <= PRECISION_CIBLE) terminer();
+    },
+    err => {
+      if (!meilleur) {
+        fini = true; navigator.geolocation.clearWatch(suivi); clearTimeout(minuteur);
+        meta.textContent = err.code === 1
+          ? "Permission refusée. Autorise la localisation pour ce site."
+          : "Impossible d'obtenir la position. Réessaie.";
+      }
+    },
+    {enableHighAccuracy: true, timeout: 20000, maximumAge: 0}
+  );
+  const minuteur = setTimeout(terminer, DUREE_MESURE_MS);
+}
+
+function copierTexte(t) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(t);
+  }
+  return new Promise((res, rej) => {
+    const z = document.createElement("textarea");
+    z.value = t; document.body.appendChild(z); z.select();
+    try { document.execCommand("copy") ? res() : rej(); } catch (e) { rej(); }
+    document.body.removeChild(z);
+  });
+}
+function copierPoint(id) {
+  const v = charger()[id];
+  if (!v) { message("Rien à copier : capture d'abord"); return; }
+  copierTexte(v.coord).then(() => message("Copié : " + v.coord)).catch(() => message("Copie impossible"));
+}
+function copierPoteaux() {
+  const d = charger();
+  const lignes = ["p1","p2","p3","p4","p5"].filter(i => d[i]).map(i => d[i].coord);
+  if (!lignes.length) { message("Aucun poteau relevé"); return; }
+  copierTexte(lignes.join("\n")).then(() => message(lignes.length + " poteau(x) copié(s)")).catch(() => message("Copie impossible"));
+}
+function toutEffacer() {
+  if (confirm("Effacer tous les points relevés ?")) { sauver({}); afficher(); }
+}
+afficher();
+</script>
+</body>
+</html>
